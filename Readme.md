@@ -1465,3 +1465,520 @@ The main engineering pattern demonstrated by this project is:
 10. **Operate securely:** use managed identities, RBAC/ACLs, Unity Catalog, monitoring and secret management.
 
 **Core interview takeaway:** The most important reusable pattern in the tutorial is the metadata-driven ADF pipeline: Lookup reads configuration, ForEach iterates through entities, parameterized datasets select the source and target dynamically, and a control table maintains load metadata and watermarks.
+
+
+---
+
+# 29. Hands-on configuration runbook — build the project step by step
+
+This section turns the notes into an implementation sequence you can follow in the Azure Portal, ADF Studio and Databricks workspace.
+
+**Important:** The steps below follow the architecture and activities described in the supplied transcript. Where the transcript does not provide an exact resource name, SQL statement, API URL, column name, secret, or notebook source code, use a placeholder and replace it with the value from the instructor's GitHub/project files. Do not copy illustrative names as if they were the instructor's exact configuration.
+
+## 29.1 Prepare your project details first
+
+Before opening the Azure Portal, prepare a small configuration sheet.
+
+| Item | Value to record |
+|---|---|
+| Azure subscription | `<your-subscription>` |
+| Resource group | `<project-resource-group>` |
+| Azure region | `<region>` |
+| Data Factory | `<adf-name>` |
+| Storage account | `<storage-account-name>` |
+| ADLS container | `branch` |
+| Azure SQL server | `<sql-server-name>` |
+| Azure SQL database | `<database-name>` |
+| Databricks workspace | `<databricks-workspace>` |
+| Databricks Access Connector | `<access-connector-name>` |
+| Logic App | `<logic-app-name>` |
+| SHIR machine | `<machine-that-can-access-csv-files>` |
+| Git repository | `<project-repository-url>` |
+
+Also obtain the instructor's source-to-target mapping, SQL scripts, JSON metadata/configuration files, CSV sample files, API documentation and PySpark notebooks. The transcript refers to these as separate project materials.
+
+## 29.2 Create the Azure resource group
+
+1. Sign in to the Azure Portal.
+2. Search for **Resource groups**.
+3. Select **Create**.
+4. Select your subscription.
+5. Enter a project resource-group name, for example `rg-azure-de-project`.
+6. Select the region in which you intend to deploy the resources.
+7. Select **Review + create**, then **Create**.
+8. Open the resource group and use it as the deployment scope for the project resources.
+
+Keep the project resources in a consistent region where possible. Check service availability and pricing for your subscription before deployment.
+
+## 29.3 Create the ADLS Gen2 storage account
+
+1. In the Azure Portal, search for **Storage accounts** and select **Create**.
+2. Select the project subscription and resource group.
+3. Enter a globally unique storage-account name.
+4. Select the region.
+5. Choose **Standard** performance for the practice setup.
+6. In the advanced settings, enable **Hierarchical namespace**. This is the important setting that enables ADLS Gen2 capabilities.
+7. Select the redundancy option. The tutorial uses LRS for its demo; choose according to your own durability and cost requirements.
+8. Review the access-tier choice. The tutorial demo uses Cool, but select a tier based on your expected read/write pattern and current pricing.
+9. Review and create the storage account.
+10. Open the storage account.
+11. Go to **Data storage → Containers**.
+12. Create a container named `branch`.
+13. Open `branch` and create the source folders:
+
+```text
+branch/
+├── SQL/
+├── CSV/
+├── API/
+└── config/
+```
+
+14. Under `SQL`, create one folder for each SQL entity in the mapping document.
+15. Under `CSV`, create one folder for each CSV entity.
+16. Under `API`, create one folder for each API entity.
+17. Upload the supplied JSON configuration files to the agreed configuration location if the tutorial's ADF pipelines read metadata files from storage.
+
+**Validation:** You should be able to browse the `branch` container and see the source folders. Do not start pipeline development until the target folder names are agreed with the source-to-target mapping.
+
+## 29.4 Create the Azure SQL source database
+
+1. In the Azure Portal, search for **SQL databases** and select **Create**.
+2. Select the project resource group.
+3. Create a new SQL logical server if you do not already have one.
+4. Configure the server administrator/authentication details required for initial setup.
+5. Enter the database name.
+6. Choose a practice-appropriate compute/pricing option. The tutorial mentions using an eligible Azure SQL free offer for learning; verify eligibility and current limits in your subscription.
+7. Configure networking so your SQL client and ADF can reach the database using the intended authentication/network model.
+8. Review and create the database.
+9. Open the database Query Editor or connect with an approved SQL client.
+10. Run the instructor-provided SQL DDL and seed-data scripts.
+11. Confirm that the source tables exist and contain data.
+12. Create and populate the pipeline control/metadata table using the instructor's SQL script.
+
+**Do not invent the table schema.** The transcript explains the purpose of the control table and watermark but does not reproduce the complete DDL or all source columns. Use the supplied SQL files.
+
+## 29.5 Enable ADF managed identity and grant access
+
+### A. Enable the Data Factory identity
+
+1. Open your Data Factory resource in the Azure Portal.
+2. Open **Identity**.
+3. Under **System assigned**, switch **Status** to **On**.
+4. Save the change.
+5. Record the displayed principal/object ID for permission assignment.
+
+### B. Give ADF access to ADLS
+
+1. Open the storage account.
+2. Go to **Access control (IAM)**.
+3. Select **Add → Add role assignment**.
+4. Choose the data role **Storage Blob Data Contributor** for the ADF identity when the pipeline must write landing files.
+5. Select the Data Factory managed identity as the member.
+6. Review and assign.
+7. Allow time for role assignment propagation, then test the ADF storage linked service.
+
+### C. Give ADF read access to Azure SQL
+
+1. Confirm the Azure SQL server is configured for Microsoft Entra authentication as required by the managed-identity approach.
+2. Connect to the database using an administrator or authorized Microsoft Entra principal.
+3. Create a database user for the Data Factory's system-assigned managed identity, using the identity name shown in Azure.
+4. Grant the minimum database permissions required to read the source tables and control metadata.
+5. Test the SQL linked service from ADF.
+
+The exact SQL user-creation statement depends on the server/database authentication configuration. Use the database identity name and permissions appropriate to your environment; do not paste an example principal name from another deployment.
+
+## 29.6 Create the Data Factory
+
+1. In the Azure Portal, search for **Data factories**.
+2. Select **Create**.
+3. Select the project subscription and resource group.
+4. Enter a globally unique Data Factory name.
+5. Select the region.
+6. Use the appropriate version option shown in the portal.
+7. Review and create.
+8. Open the Data Factory resource.
+9. Select **Launch Studio**.
+10. In ADF Studio, open **Manage → Managed private endpoints / Integration runtimes** only if your networking design requires them; the tutorial's cloud SQL and ADLS connections use the Azure-hosted/AutoResolve integration runtime.
+11. Confirm the system-assigned managed identity is enabled as described above.
+
+## 29.7 Configure the SQL and ADLS linked services
+
+In ADF Studio:
+
+### A. Azure SQL linked service
+
+1. Open **Manage → Linked services**.
+2. Select **New**.
+3. Search for **Azure SQL Database**.
+4. Select the connector and continue.
+5. Give it a clear name, such as `LS_AzureSQL_Source`.
+6. Select the Azure integration runtime used for cloud connectivity (the tutorial uses AutoResolve IR).
+7. Select the subscription, server and database.
+8. Choose **System-assigned managed identity** for authentication, matching the identity permissions configured earlier.
+9. Select **Test connection**.
+10. Save only after the connection test succeeds.
+
+### B. ADLS Gen2 linked service
+
+1. From **Manage → Linked services**, select **New**.
+2. Search for **Azure Data Lake Storage Gen2**.
+3. Give it a name, such as `LS_ADLS_Sink`.
+4. Select the storage account.
+5. Choose the system-assigned managed identity authentication option used in the walkthrough.
+6. Select the cloud integration runtime.
+7. Test the connection.
+8. Save after the test succeeds.
+
+### C. JSON configuration linked service
+
+If the metadata JSON is stored in ADLS, reuse the storage connection or create a clearly named linked service for the same storage account. The JSON dataset will point to the configuration file path.
+
+## 29.8 Create datasets for SQL, ADLS and JSON
+
+1. In ADF Studio, open **Author**.
+2. Select **+ → Dataset**.
+3. Create an Azure SQL Database dataset.
+4. Select the SQL linked service.
+5. Choose the source table for a first test, or configure a dataset parameter for the table name when preparing the metadata-driven version.
+6. Save it with a name such as `DS_SQL_Source`.
+7. Create an ADLS Gen2 dataset.
+8. Select the ADLS linked service.
+9. Select the correct file system/container (`branch`) and a sample target folder/file format.
+10. Save it with a name such as `DS_ADLS_Sink`.
+11. Create a JSON dataset for the metadata/configuration file.
+12. Point it to the configuration folder and JSON file.
+13. Validate each dataset by opening its connection/path settings.
+
+For the reusable pipeline, parameterize the dataset rather than hard-coding a single table or folder. Common parameter concepts are source table/entity and destination folder/entity. Use the exact parameter names expected by your pipeline expressions.
+
+## 29.9 Build and test a single-table SQL initial-load pipeline
+
+Build this first to prove connectivity before introducing metadata-driven complexity.
+
+1. In **Author**, select **+ → Pipeline**.
+2. Name it to indicate SQL initial load.
+3. Drag a **Copy Data** activity onto the canvas.
+4. Open the activity's **Source** tab.
+5. Select the SQL source dataset.
+6. Select the table or query for one test entity.
+7. Open the **Sink** tab.
+8. Select the ADLS sink dataset.
+9. Set the output path under `branch/SQL/<entity>/`.
+10. Configure the output file format and any required file naming settings.
+11. Open **Validate** and resolve configuration errors.
+12. Select **Debug** to run a test.
+13. Open the activity output and confirm that the copy succeeded.
+14. Open the storage account → Containers → `branch` → `SQL` → the entity folder.
+15. Confirm that the file was created and has data.
+16. Once validated, publish the ADF changes.
+
+## 29.10 Convert the SQL pipeline to metadata-driven processing
+
+The tutorial uses metadata so one pipeline can process multiple source tables.
+
+### A. Prepare metadata
+
+1. Use the supplied JSON configuration or control-table script.
+2. Include the source entity/table information and the corresponding sink folder information required by the pipeline.
+3. If using the SQL control table, populate one metadata row per entity.
+4. Keep the entity names and destination paths consistent with the ADLS folder structure.
+
+### B. Configure the parameterized datasets
+
+1. Open the SQL source dataset.
+2. Add a dataset parameter for the source table/entity.
+3. In the connection/table setting, use the dataset parameter rather than a fixed table name.
+4. Open the ADLS sink dataset.
+5. Add parameters for the destination folder and, where required, file name.
+6. Use those parameters in the dataset's directory/file path.
+7. Save and validate the datasets.
+
+### C. Configure Lookup and ForEach
+
+1. Open the SQL metadata pipeline.
+2. Add a **Lookup** activity.
+3. Configure its source as the JSON metadata dataset or SQL control-table dataset, depending on the selected implementation.
+4. For JSON metadata, configure the file path and JSON structure.
+5. For SQL metadata, select the control table and enable the option to return multiple rows when the pipeline needs an array of records.
+6. Add a **ForEach** activity.
+7. Connect the Lookup success output to the ForEach activity.
+8. Set the ForEach items expression to the array returned by Lookup. For a multi-row Lookup this is normally the `value` array from the activity output; verify the exact activity name used in your pipeline.
+9. Place the Copy Data activity inside the ForEach.
+10. Pass the current item’s source table/entity value into the SQL dataset parameter.
+11. Pass the current item’s target folder/entity value into the ADLS dataset parameter.
+12. Debug with a small metadata list first.
+13. Check that each entity lands in its matching folder.
+14. Increase the metadata list only after the small test succeeds.
+
+**Why this matters:** adding another source table should normally require a metadata/configuration change rather than building another nearly identical pipeline.
+
+## 29.11 Configure incremental SQL ingestion and watermarks
+
+The tutorial's incremental pattern compares a source `updated_at`-style column with the last watermark stored for that entity.
+
+1. Confirm that the source entity has a reliable created/updated timestamp column.
+2. Confirm that the control table stores the entity name and its last successful watermark value.
+3. In the pipeline, use Lookup to read the current watermark for the entity.
+4. Pass the watermark to the source query/dataset.
+5. Filter the source rows to those with an update timestamp greater than the stored watermark.
+6. Copy the resulting rows to the ADLS landing folder.
+7. After a successful copy, determine the new maximum update timestamp processed.
+8. Update the control table with the new watermark and run metadata.
+9. Record the run start time, end time, status and row count if those fields exist in the supplied control-table design.
+10. Test with a known record: run once, update/insert a source record with a later timestamp, run again, and confirm that only the expected changed rows are extracted.
+
+**Operational safeguard:** update the watermark only after the data movement succeeds. If the copy fails, do not advance the watermark; otherwise records can be skipped on the next run. The exact stored procedure/SQL update activity is not fully specified in the transcript, so follow the instructor's pipeline and SQL files for the precise implementation.
+
+## 29.12 Configure Logic Apps notification
+
+1. In the Azure Portal, search for **Logic Apps**.
+2. Select **Create** and choose the workflow type used in your subscription.
+3. Select the project resource group and region.
+4. Create and open the Logic App Designer.
+5. Add an HTTP request trigger (the trigger that allows ADF to call the workflow).
+6. Save the workflow and copy the generated HTTP endpoint/URL.
+7. Add the notification action shown in the tutorial (for example, the configured email/notification connector).
+8. Configure the recipient and message fields using the trigger payload.
+9. Save and test the Logic App independently.
+10. In ADF Studio, add a **Web** activity after the pipeline outcome branch where the notification should be sent.
+11. Set the method to POST and use the Logic App HTTP endpoint.
+12. Supply a JSON body containing the pipeline/run status information required by your workflow.
+13. Debug the ADF pipeline and confirm that the Logic App receives the request and sends the notification.
+
+The transcript describes the HTTP-trigger-to-notification pattern; the exact email provider, recipient, JSON schema and message wording depend on the tutorial's configuration.
+
+## 29.13 Configure Self-hosted Integration Runtime for CSV files
+
+Use SHIR when ADF needs to reach files on a machine or network that the Azure-hosted runtime cannot directly access.
+
+1. Identify the Windows machine/server where the CSV files are stored or where the required network share is accessible.
+2. In ADF Studio, open **Manage → Integration runtimes**.
+3. Select **New → Azure, Self-Hosted** (wording may vary slightly in the portal).
+4. Select **Self-Hosted** and continue.
+5. Give the runtime a name, such as `SHIR_OnPrem_CSV`.
+6. Create it and open its configuration/download page.
+7. Download the integration runtime installer for Windows.
+8. Install it on the machine that can access the source CSV directory.
+9. Register the runtime using the authentication key shown in ADF.
+10. Confirm that the runtime status in ADF is **Running/Online**.
+11. In ADF, create a File System linked service.
+12. Select the self-hosted integration runtime.
+13. Enter the accessible folder path and required credentials/authentication.
+14. Test the connection.
+15. Create a delimited-text/CSV dataset pointing to the required file or folder.
+16. Configure the CSV delimiter, header-row setting and encoding to match the actual files.
+17. Build a Copy Data pipeline from the file-system dataset to the ADLS Gen2 dataset.
+18. For multiple CSV entities, use metadata + Lookup + ForEach and parameterized file paths.
+19. Run the pipeline and verify the files under `branch/CSV/<entity>/`.
+
+The SHIR host must remain online and able to reach both the file source and the required Azure endpoints while the pipeline runs.
+
+## 29.14 Configure REST API ingestion in ADF
+
+1. Obtain the API base URL, endpoint list, authentication method, expected response format and pagination rules from the API owner or instructor's materials.
+2. Test the API outside ADF first using an approved API client.
+3. Confirm the authentication flow and that the account/token can access the required endpoints.
+4. In ADF Studio, create a REST linked service.
+5. Enter the base URL and configure the authentication method required by the API.
+6. Test and save the linked service.
+7. Create a REST dataset and configure the relative endpoint path.
+8. Create metadata for the endpoints to be processed.
+9. Build a Lookup activity to read endpoint metadata.
+10. Add a ForEach activity over the endpoint list.
+11. Inside the loop, use Copy Data with the REST dataset parameterized by the current endpoint.
+12. Configure pagination according to the API response contract. Do not assume all APIs use the same pagination method.
+13. Configure the ADLS sink path under `branch/API/<endpoint-or-entity>/`.
+14. Run one endpoint first and inspect the landed JSON/data.
+15. Test additional endpoints and verify that each lands in the expected folder.
+16. If the API supports incremental extraction, use its timestamp, cursor or watermark mechanism as documented by that API.
+
+The transcript names API entities such as payments, deliveries, order status and ratings, but it does not provide a complete public API URL or universal pagination configuration. Use the endpoint details supplied with the project.
+
+## 29.15 Create the Databricks workspace and configure storage access
+
+### A. Create the workspace
+
+1. In the Azure Portal, search for **Azure Databricks**.
+2. Select **Create**.
+3. Choose the project subscription, resource group and region.
+4. Enter the workspace name.
+5. Select the workspace pricing/tier appropriate for the features you need and your budget.
+6. Review and create.
+7. Open the workspace.
+
+### B. Create or identify the Access Connector
+
+1. In the Azure Portal, search for **Access Connector for Azure Databricks**.
+2. Create the connector in the project resource group/region, or use the connector supplied by your project design.
+3. Open the connector and record its managed identity.
+4. Open the ADLS storage account → **Access control (IAM)**.
+5. Assign the storage data role required for Databricks to access the lake to the Access Connector managed identity.
+6. Scope the role to the storage account or narrower required container/path, following your security design.
+
+### C. Configure Unity Catalog access
+
+In the Databricks workspace, use the Unity Catalog/catalog explorer administration flow available to your account:
+
+1. Ensure Unity Catalog is available for the workspace/metastore.
+2. Create a storage credential backed by the Azure Databricks Access Connector managed identity.
+3. Create an external location using the storage credential and the intended ADLS path.
+4. Validate that the location can be accessed.
+5. Create the project catalog and schemas used by the tutorial.
+6. Grant the required users/groups the minimum privileges needed to use the catalog, schemas and external location.
+
+The transcript describes the Access Connector, storage credential, external location and catalog/schema setup. Exact names, grants and metastore administration depend on the workspace and account configuration.
+
+## 29.16 Configure Git integration and Databricks utility code
+
+1. Open the Databricks workspace.
+2. Open **User Settings** and locate Git integration settings.
+3. Add the Git provider credentials/token using the supported secure configuration.
+4. Open the Git folders/Repos area.
+5. Select **Add Git folder/Clone repository**.
+6. Enter the project repository URL and select the branch.
+7. Confirm that the repository files appear in the workspace.
+8. Create or open the common utility module described in the tutorial.
+9. Put reusable functions in that module rather than duplicating the same logic in every notebook.
+10. Import the utility functions into the entity notebooks using the import method shown in the tutorial.
+11. Test the import in a small notebook before running the complete workload.
+
+Do not commit credentials, access tokens, passwords or connection secrets into Git. Store secrets using an approved secret-management approach.
+
+## 29.17 Build Bronze and Silver processing notebooks
+
+### Bronze
+
+1. Create/open the Bronze notebook in the project Git folder.
+2. Read the landed source data from the ADLS landing paths.
+3. Preserve the source data in the Bronze layer with minimal transformation, following the tutorial's design.
+4. Add ingestion metadata if required by the project design.
+5. Write the output in Delta format to the configured Bronze catalog/schema/location.
+6. Run the notebook for one entity and inspect the resulting Delta table.
+
+### Silver
+
+1. Create an entity-specific Silver notebook or use the reusable notebook pattern from the tutorial.
+2. Read the corresponding Bronze Delta table.
+3. Apply common standardization: column naming, data types and other shared cleanup.
+4. Apply the entity-specific business rules from the mapping/business-rule document.
+5. Validate required fields, keys and expected values.
+6. Deduplicate using the correct business key and ordering logic.
+7. Write the cleaned data as a Delta table in the Silver schema.
+8. Run and validate one entity at a time.
+9. Compare source, Bronze and Silver row counts and investigate unexpected differences.
+
+The transcript discusses entity-specific rules and common utilities, but the complete business-rule code and all exact column names must come from the instructor's notebook files.
+
+## 29.18 Configure Delta write behavior
+
+Choose the write mode based on the load type:
+
+- **Initial/full refresh:** overwrite the target only when the intended behavior is to replace the target contents.
+- **Incremental append:** append only when incoming rows are new and duplicates are not possible or are handled separately.
+- **Upsert/change processing:** use a merge/upsert pattern when existing business keys can be updated. Do not use blind append for mutable entities.
+
+Before enabling overwrite in a shared production table, confirm that the target path/table is correct and that the refresh is intended. Test the mode on a development table first.
+
+## 29.19 Create dispatcher notebooks and Databricks jobs
+
+The tutorial uses dispatcher notebooks to centralize execution across source entities.
+
+1. Create a dispatcher notebook for the SQL source.
+2. Configure it to accept the source/entity parameters required by the entity processing notebooks.
+3. Add the routing/dispatch logic that selects the correct processing notebook or entity workflow.
+4. Test the dispatcher for one SQL entity.
+5. Create a Databricks job for the SQL source and configure its task to run the dispatcher notebook.
+6. Configure the job's compute option and parameters.
+7. Run the job manually and inspect task output.
+8. Repeat the dispatcher/job pattern for the on-premises CSV source.
+9. Repeat the dispatcher/job pattern for the API source.
+10. Confirm that each source job writes to the intended Bronze/Silver targets.
+11. Configure retries, notifications and concurrency limits according to workload requirements.
+
+The transcript has separate job walkthroughs for SQL, on-premises and API sources. Exact task names, notebook paths and parameter names should match the repository.
+
+## 29.20 Connect ADF to Databricks and orchestrate the jobs
+
+1. In ADF Studio, open **Manage → Linked services**.
+2. Select **New** and search for the Azure Databricks connector.
+3. Select the Databricks workspace and configure the authentication method supported by your environment.
+4. Test the linked service.
+5. In the ADF pipeline, add the Databricks activity or job-invocation activity used in the tutorial.
+6. Select the linked service and the relevant notebook/job.
+7. Pass the source or entity parameters expected by the dispatcher.
+8. Connect the activity after the corresponding ingestion pipeline succeeds.
+9. Configure failure and success dependencies deliberately.
+10. Debug the complete flow for one entity.
+11. Verify that the ADF run and Databricks job run both succeeded.
+12. Verify the resulting Delta tables in the expected catalog/schema.
+
+Keep ingestion and transformation independently testable. If the source copy succeeds but Databricks fails, you should be able to rerun the processing stage against the already-landed data without blindly re-extracting the source.
+
+## 29.21 Build the Gold layer and connect Power BI
+
+1. Confirm that the required Silver entities are complete and validated.
+2. Identify the business questions and KPIs from the requirements.
+3. Design Gold tables/views around reporting needs rather than simply copying every Silver table.
+4. Create Gold transformation notebooks/jobs.
+5. Join and aggregate the required Silver entities using the documented business keys.
+6. Validate totals and KPI calculations against known source/business examples.
+7. Write the Gold output to the designated Gold schema/layer.
+8. Configure Power BI to connect to the approved Gold serving endpoint/data source.
+9. Build the report model and measures.
+10. Validate report totals with the business owner or expected calculations.
+
+The transcript introduces and implements the Gold layer and uses Power BI for stakeholder reporting. The exact Gold star-schema design and Power BI report definitions must be based on the business requirements and project files.
+
+## 29.22 End-to-end validation checklist
+
+Run these checks in order before calling the project complete.
+
+- [ ] All Azure resources are in the intended resource group and region.
+- [ ] ADLS Gen2 hierarchical namespace is enabled.
+- [ ] `branch` contains the expected SQL, CSV, API and configuration folders.
+- [ ] SQL source tables contain the supplied seed data.
+- [ ] ADF managed identity can read Azure SQL.
+- [ ] ADF managed identity can write to ADLS.
+- [ ] SQL and ADLS linked-service tests pass.
+- [ ] Single-table SQL copy succeeds.
+- [ ] Metadata-driven SQL pipeline processes more than one entity.
+- [ ] Control-table run metadata is updated correctly.
+- [ ] Incremental run extracts only records beyond the previous watermark.
+- [ ] Failed runs do not advance the watermark.
+- [ ] Logic App receives ADF status and sends the expected notification.
+- [ ] SHIR is online and can read the on-premises CSV files.
+- [ ] CSV files land in their expected ADLS folders.
+- [ ] REST API authentication and pagination work.
+- [ ] API entities land in their expected ADLS folders.
+- [ ] Databricks can access ADLS through the configured Unity Catalog external location.
+- [ ] Git repository is connected and notebooks are synchronized.
+- [ ] Bronze and Silver notebooks run successfully.
+- [ ] Business rules, null checks, key checks and deduplication are validated.
+- [ ] Delta write modes are correct for full and incremental loads.
+- [ ] SQL, CSV and API dispatcher jobs complete successfully.
+- [ ] ADF can orchestrate the Databricks processing.
+- [ ] Gold outputs reconcile with Silver/source data.
+- [ ] Power BI reports show expected totals and KPIs.
+
+## 29.23 Recommended order for your first implementation
+
+Do not configure all services at once. Follow this smaller sequence and validate each milestone before moving forward:
+
+1. Create the resource group, ADLS Gen2 and Azure SQL.
+2. Create ADF and enable its managed identity.
+3. Configure SQL and ADLS permissions.
+4. Test SQL and ADLS linked services.
+5. Build one SQL-to-ADLS Copy Data pipeline.
+6. Convert it to Lookup + ForEach + parameterized datasets.
+7. Add control-table watermark processing.
+8. Configure Logic Apps notification.
+9. Configure SHIR and ingest one CSV file.
+10. Configure REST ingestion for one endpoint.
+11. Create Databricks workspace and Unity Catalog storage access.
+12. Connect Git and build one Bronze/Silver notebook.
+13. Create the source dispatcher jobs.
+14. Orchestrate ingestion and Databricks from ADF.
+15. Build Gold and connect Power BI.
+
+**Practice tip:** Finish the SQL path end to end first. Once the SQL pattern works, reuse the same architecture for CSV and REST rather than debugging three source systems simultaneously.
